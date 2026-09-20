@@ -79,9 +79,11 @@ pub(crate) fn track_tee_read(cmd: &str) {
 ///
 /// A delegate that gates the rewritten command itself can set
 /// [`decision::REWRITE_HOST_ENV`] to its own agent name, which turns exit 3
-/// into exit 0 for it and nothing else — see [`decision::ApprovalOwner`]. Exit
-/// 2 is not reachable from that path, so an explicitly denied command is
-/// denied for every delegate, named or not.
+/// into exit 0 for it and nothing else — see [`decision::ApprovalOwner`].
+/// [`decision::ApprovalOwner::apply`] matches on [`HookDecision::AskRewrite`]
+/// alone, so it cannot transform a [`HookDecision::Deny`]: an explicit deny
+/// still reaches this function as `Deny` and still renders as exit 2, for
+/// every delegate, named or not.
 pub fn run(cmd: &str) -> anyhow::Result<()> {
     // `rtk rewrite` has one rule source for every delegate that shells out to
     // it -- hermes, omp, opencode, openclaw, pi -- and that is `~/.claude`'s

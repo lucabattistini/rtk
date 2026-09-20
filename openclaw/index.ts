@@ -145,10 +145,14 @@ export default function register(api: any) {
       // policy, applied after this hook returns. Asking here as well was the
       // duplicate gate #3908 describes.
       //
-      // Exec rules see the rewritten string. OpenClaw folds hook adjustments
-      // into the params handed to the exec tool, so a rule written against
-      // `git push` does not match `rtk git push` — write them against the
-      // `rtk` form. This was already true on the exit-0 path before #3908.
+      // The exec tool's own checks see the rewritten string. OpenClaw carries
+      // hook adjustments forward into the params handed to the exec tool, so
+      // `tools.exec.mode`, `security`, `ask` and the exec-approvals allowlist
+      // all match `rtk git push`, not `git push` — write those rules against
+      // the `rtk` form. This was already true on the exit-0 path before #3908.
+      // A trusted tool policy is the exception: OpenClaw runs those before
+      // ordinary `before_tool_call` hooks, so one still sees the original
+      // command.
       return {
         params: { ...event.params, command: rewritten },
       };

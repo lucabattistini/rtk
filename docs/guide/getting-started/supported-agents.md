@@ -192,7 +192,7 @@ Plugin in the `openclaw/` directory. Uses the `before_tool_call` hook, delegates
 
 A command matching a `permissions.deny` rule in those same Claude Code settings files is still refused, and the plugin blocks the tool call — naming the host only relaxes an ask. Commands containing a command substitution or a redirect to a file are never rewritten, on any host.
 
-Exec rules see the rewritten command. OpenClaw folds hook adjustments into the parameters passed to the exec tool, so a rule written against `git push` does not match `rtk git push`; write OpenClaw's own exec rules against the `rtk` form. That was already true before the permission change.
+The exec tool's own checks see the rewritten command. OpenClaw carries hook adjustments forward into the parameters passed to the exec tool, so `tools.exec.mode`, `tools.exec.security`, `tools.exec.ask` and the exec-approvals allowlist are all matched against `rtk git push`, not `git push`; write those rules against the `rtk` form. That was already true before the permission change. A trusted tool policy (`api.registerTrustedToolPolicy(...)`) is the exception: OpenClaw runs trusted policies before ordinary `before_tool_call` hooks, so one of those still sees the original command.
 
 No minimum rtk version: an rtk that predates `RTK_REWRITE_HOST` ignores it and keeps its previous behaviour, which is a prompt rather than a missing gate.
 

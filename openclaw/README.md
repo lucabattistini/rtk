@@ -76,7 +76,9 @@ What does change: the plugin no longer raises an approval prompt of its own. Any
 
 ### Writing exec rules
 
-The plugin replaces `params.command` in `before_tool_call`, and OpenClaw folds hook adjustments into the parameters it passes to the exec tool. The tool therefore receives `rtk git push`, not `git push`. Write OpenClaw's exec allow/deny rules against the `rtk` form. This was already true before the permission change.
+The plugin replaces `params.command` in `before_tool_call`, and OpenClaw carries hook adjustments forward into the parameters it passes to the exec tool. The tool therefore receives `rtk git push`, not `git push`, and the checks the exec tool runs on its own parameters -- `tools.exec.mode`, `tools.exec.security`, `tools.exec.ask`, and the exec-approvals allowlist -- match against the `rtk` form. Write those rules against the `rtk` form. This was already true before the permission change.
+
+One gate runs earlier and sees the original command: a trusted tool policy registered with `api.registerTrustedToolPolicy(...)`. OpenClaw runs trusted policies before ordinary `before_tool_call` hooks, so such a policy is shown `git push`, not `rtk git push`. Only the exec tool's own checks see the rewritten string.
 
 ### rtk version
 
