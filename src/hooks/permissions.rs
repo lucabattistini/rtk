@@ -21,63 +21,27 @@ pub enum PermissionVerdict {
     Default,
 }
 
+/// Check `cmd` against Claude Code's deny/ask/allow permission rules.
+///
+/// Precedence: Deny > Ask > Allow > Default (ask).
+/// Returns `Default` when no rules match — callers should treat this as ask
+/// to match Claude Code's least-privilege default.
+pub fn check_command(cmd: &str) -> PermissionVerdict {
+    check_command_for(cmd, Host::Claude)
+}
+
 /// The agent host whose own permission settings should be consulted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Host {
     Claude,
+    Codex,
+    Trae,
     Cursor,
     Gemini,
     Droid,
     Vibe,
-    OpenClaw,
 }
 
-/// Host names accepted by `rtk rewrite --host`, in the order they are shown in help.
-pub const HOST_NAMES: &[&str] = &["claude", "cursor", "gemini", "droid", "vibe", "openclaw"];
-
-impl Host {
-    /// Parse a `rtk rewrite --host` value. Case-insensitive; returns `None` for
-    /// an unrecognized name so the caller decides the fallback.
-    ///
-    /// Deliberately not a clap `ValueEnum`: clap rejects an unknown value by
-    /// exiting 2, and the `rtk rewrite` exit-code protocol reserves 2 for
-    /// "a deny rule matched". A typo in `--host` must not read as a deny.
-    pub fn from_cli_name(name: &str) -> Option<Self> {
-        match name.to_ascii_lowercase().as_str() {
-            "claude" => Some(Host::Claude),
-            "cursor" => Some(Host::Cursor),
-            "gemini" => Some(Host::Gemini),
-            "droid" => Some(Host::Droid),
-            "vibe" => Some(Host::Vibe),
-            "openclaw" => Some(Host::OpenClaw),
-            _ => None,
-        }
-    }
-
-    /// True when the host enforces its own exec policy on the command RTK hands
-    /// back, so RTK must not stack a second approval gate on top of it.
-    ///
-    /// Such a host consumes the `rtk rewrite` exit code as a *rewrite* decision,
-    /// not a *permission* decision: it re-evaluates the rewritten command against
-    /// its own policy before running it. Adding an RTK-side ask there produces a
-    /// blocking prompt derived from a config file the host never opted into —
-    /// the same failure mode #3037 fixed for Copilot CLI.
-    ///
-    /// Only [`Host::OpenClaw`] qualifies. [`Host::Vibe`] also loads no rules, but
-    /// its adapter (`run_vibe`) already treats an ask verdict as a plain rewrite,
-    /// so flipping it here would change behavior for no gain.
-    pub fn is_permission_authority(self) -> bool {
-        matches!(self, Host::OpenClaw)
-    }
-}
-
-/// Check `cmd` against `host`'s deny/ask/allow permission rules.
-///
-/// Precedence: Deny > Ask > Allow > Default (ask).
-/// Returns `Default` when no rules match — callers should treat this as ask
-/// to match Claude Code's least-privilege default. The one exception is a host
-/// that is its own permission authority (see [`Host::is_permission_authority`]),
-/// where the caller resolves `Default` itself.
 pub fn check_command_for(cmd: &str, host: Host) -> PermissionVerdict {
     let (deny_rules, ask_rules, allow_rules) = load_rules_for(host);
     check_command_with_rules(cmd, &deny_rules, &ask_rules, &allow_rules)
@@ -95,9 +59,11 @@ pub(crate) fn load_rules_for(host: Host) -> (Vec<String>, Vec<String>, Vec<Strin
         Host::Cursor => load_cursor_rules(),
         Host::Gemini => load_gemini_rules(),
         Host::Droid => load_droid_rules(),
-        // Vibe and OpenClaw: RTK owns no rule source for these hosts, so it
-        // asserts no verdict of its own and leaves the decision to the host.
-        Host::Vibe | Host::OpenClaw => (Vec::new(), Vec::new(), Vec::new()),
+        // Hosts with no RTK-side rule source. Codex enforces its native
+        // execution rules after updatedInput. Do not interpret these hosts'
+        // rules as Claude Bash patterns or borrow another host's settings.
+        // No RTK-side match means Default, not an explicit Allow.
+        Host::Codex | Host::Trae | Host::Vibe => (Vec::new(), Vec::new(), Vec::new()),
     }
 }
 
@@ -217,10 +183,10 @@ fn append_bash_rules(rules_value: Option<&Value>, target: &mut Vec<String>) {
         return;
     };
     for rule in arr {
-        if let Some(s) = rule.as_str() {
-            if s.starts_with("Bash(") {
-                target.push(extract_bash_pattern(s).to_string());
-            }
+        if let Some(s) = rule.as_str()
+            && s.starts_with("Bash(")
+        {
+            target.push(extract_bash_pattern(s).to_string());
         }
     }
 }
@@ -318,12 +284,11 @@ fn gemini_settings() -> Option<Value> {
                     .and_then(Value::as_bool)
             })
             .unwrap_or(false);
-    if trusted {
-        if let Some(root) = find_project_root() {
-            if let Some(v) = read_json(&root.join(GEMINI_DIR).join(SETTINGS_JSON)) {
-                return Some(v);
-            }
-        }
+    if trusted
+        && let Some(root) = find_project_root()
+        && let Some(v) = read_json(&root.join(GEMINI_DIR).join(SETTINGS_JSON))
+    {
+        return Some(v);
     }
     global
 }
@@ -428,10 +393,10 @@ fn find_project_root() -> Option<PathBuf> {
 ///
 /// Returns the original string unchanged if it does not match the expected format.
 pub(crate) fn extract_bash_pattern(rule: &str) -> &str {
-    if let Some(inner) = rule.strip_prefix("Bash(") {
-        if let Some(pattern) = inner.strip_suffix(')') {
-            return pattern;
-        }
+    if let Some(inner) = rule.strip_prefix("Bash(")
+        && let Some(pattern) = inner.strip_suffix(')')
+    {
+        return pattern;
     }
     rule
 }
@@ -546,67 +511,6 @@ fn split_compound_command(cmd: &str) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// `Host::OpenClaw` must resolve to an empty rule triple, pinned beside the
-    /// `Host::Vibe` case it mirrors. RTK owns no OpenClaw rule source, so reading
-    /// Claude Code's settings files for an OpenClaw caller would apply another
-    /// agent's config to a runtime that never opted into it (#3908).
-    #[test]
-    fn test_openclaw_and_vibe_load_no_rules() {
-        for host in [Host::OpenClaw, Host::Vibe] {
-            let (deny, ask, allow) = load_rules_for(host);
-            assert!(deny.is_empty(), "{host:?} must contribute no deny rules");
-            assert!(ask.is_empty(), "{host:?} must contribute no ask rules");
-            assert!(allow.is_empty(), "{host:?} must contribute no allow rules");
-        }
-    }
-
-    /// With no rules loaded, every command is `Default` — never `Allow`.
-    /// The collapse to allow for a host-authoritative host happens in
-    /// `rewrite_cmd`, not here, so this layer stays a pure rule evaluation.
-    #[test]
-    fn test_openclaw_verdict_is_default_not_allow() {
-        assert_eq!(
-            check_command_for("git status", Host::OpenClaw),
-            PermissionVerdict::Default
-        );
-    }
-
-    #[test]
-    fn test_only_openclaw_is_a_permission_authority() {
-        assert!(Host::OpenClaw.is_permission_authority());
-        for host in [
-            Host::Claude,
-            Host::Cursor,
-            Host::Gemini,
-            Host::Droid,
-            Host::Vibe,
-        ] {
-            assert!(
-                !host.is_permission_authority(),
-                "{host:?} must keep RTK's own verdict authoritative"
-            );
-        }
-    }
-
-    #[test]
-    fn test_host_from_cli_name_round_trips_every_advertised_name() {
-        for name in HOST_NAMES {
-            assert!(
-                Host::from_cli_name(name).is_some(),
-                "advertised host name {name:?} must parse"
-            );
-        }
-        assert_eq!(Host::from_cli_name("OpenClaw"), Some(Host::OpenClaw));
-        assert_eq!(Host::from_cli_name("CLAUDE"), Some(Host::Claude));
-    }
-
-    #[test]
-    fn test_host_from_cli_name_rejects_unknown() {
-        assert_eq!(Host::from_cli_name("openclaw "), None);
-        assert_eq!(Host::from_cli_name("nope"), None);
-        assert_eq!(Host::from_cli_name(""), None);
-    }
 
     #[test]
     fn test_get_settings_paths_uses_the_resolved_claude_dir() {

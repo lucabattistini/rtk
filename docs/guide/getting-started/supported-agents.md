@@ -1,6 +1,6 @@
 ---
 title: Supported Agents
-description: How to integrate RTK with Claude Code, Cursor, Copilot, Cline, Windsurf, Codex, OpenCode, Hermes, Kilo Code, Antigravity, Factory Droid, and Mistral Vibe
+description: How to integrate RTK with Claude Code, Cursor, Copilot, Cline, Windsurf, Codex, OpenCode, Hermes, Kilo Code, Antigravity, Factory Droid, Mistral Vibe, and Trae
 sidebar:
   order: 3
 ---
@@ -14,8 +14,6 @@ RTK supports all major AI coding agents across 3 integration tiers.
 Each agent integration intercepts CLI commands before execution and rewrites them to their RTK equivalent. The agent runs `rtk cargo test` instead of `cargo test`, sees filtered output, and reads up to 90% fewer bash output bytes — without any change to your workflow.
 
 All rewrite logic lives in the RTK binary (`rtk rewrite`). Agent hooks are thin delegates that parse the agent-specific JSON format and call `rtk rewrite` for the actual decision.
-
-`rtk rewrite` takes an optional `--host <HOST>` naming the agent whose permission rules apply (`claude`, `cursor`, `gemini`, `droid`, `vibe`, `openclaw`). It defaults to `claude`, so any hook that omits the flag behaves exactly as before. The flag must precede the command, as in `rtk rewrite --host openclaw git status`. Only OpenClaw currently passes it, because OpenClaw enforces its own exec policy on the rewritten command and an RTK-side prompt would be a second gate.
 
 ```
 Agent runs "cargo test"
@@ -31,6 +29,7 @@ Agent runs "cargo test"
 | Agent | Integration tier | Can rewrite transparently? |
 |-------|-----------------|---------------------------|
 | Claude Code | Shell hook (`PreToolUse`) | Yes |
+| Trae | Rust binary (`PreToolUse`, matcher `RunCommand`) | Yes |
 | VS Code Copilot Chat | Shell hook (`PreToolUse`) | Yes |
 | GitHub Copilot CLI | Shell hook (`PreToolUse`) | Yes |
 | Cursor | Shell hook (`preToolUse`) | Yes |
@@ -43,10 +42,15 @@ Agent runs "cargo test"
 | Factory Droid | Shell hook (`PreToolUse`, matcher `Execute`) | Yes |
 | Cline / Roo Code | Rules file (prompt-level) | N/A |
 | Windsurf | Rules file (prompt-level) | N/A |
-| Codex CLI | AGENTS.md instructions | N/A |
+| Codex CLI | Rust binary (`PreToolUse`) | Yes |
 | Kilo Code | Rules file (prompt-level) | N/A |
 | Google Antigravity | Rules file (prompt-level) | N/A |
 | Mistral Vibe | Rust binary (`pre_tool`) | Yes |
+
+Agents that rewrite transparently receive the awareness file selected by `awareness.level` in
+`config.toml` (`default` says nothing about RTK). Rules-file agents cannot rewrite, so the agent
+must prefix `rtk` itself; they always receive the `full` awareness file and `rtk init` says so.
+See [Configuration](configuration.md#awareness-level).
 
 ## Installation by agent
 
@@ -61,6 +65,30 @@ Restart Claude Code. Verify:
 ```bash
 rtk init --show    # shows hook status
 ```
+
+### Trae
+
+```bash
+rtk init --agent trae             # project-scoped (.trae/hooks.json)
+rtk init --global --agent trae    # user-scoped (~/.trae/hooks.json)
+```
+
+Global installation also updates `~/.trae-cn/hooks.json` when the `.trae-cn` directory already exists. Both modes install the native `rtk hook trae` command as a `PreToolUse` hook for `RunCommand`.
+
+Configuration files and hook input may include a UTF-8 BOM. Existing `rtk.exe hook trae` registrations are also recognized during install and uninstall.
+
+If a global install fails while writing a target, the error lists any targets already updated. After fixing the reported filesystem error, rerun the install; completed targets will not receive duplicate hooks.
+
+The hook returns `hookSpecificOutput.updatedInput`, preserving fields such as `description` and `timeout` while replacing only `command`. It deliberately omits `permissionDecision`, leaving command approval to Trae. Commands containing command substitution, process substitution, heredocs, or file-target redirects are left unchanged so Trae evaluates the original command natively.
+
+Uninstall:
+
+```bash
+rtk init --uninstall --agent trae
+rtk init --uninstall --global --agent trae
+```
+
+Uninstall removes only RTK-managed hook entries; unrelated Trae hooks and configuration are preserved.
 
 ### Cursor
 
@@ -158,11 +186,7 @@ Removes only the current or known historical stock OMP extension. If the file ha
 openclaw plugins install ./openclaw
 ```
 
-Plugin in the `openclaw/` directory. Uses the `before_tool_call` hook, delegates to `rtk rewrite --host openclaw`.
-
-OpenClaw's exec policy is the sole authority over whether a rewritten command runs. `--host openclaw` tells RTK to decide only whether a command can be rewritten; `tools.exec.mode`, `security`, and `ask` decide whether it runs, and OpenClaw applies them after the hook returns. RTK reads no rule file for this host, so deny rules in `.claude/settings.json` do not apply to OpenClaw — put them in OpenClaw's own exec configuration instead. The plugin raises no approval prompt of its own; a deny verdict from RTK still blocks the tool call. See [#3908](https://github.com/rtk-ai/rtk/issues/3908).
-
-The plugin needs an rtk build that understands `rtk rewrite --host`. An older rtk absorbs the flag into the command string, matches nothing, and exits 1, so rewriting stops without blocking anything.
+Plugin in the `openclaw/` directory. Uses the `before_tool_call` hook, delegates to `rtk rewrite`.
 
 ### Hermes
 
@@ -211,9 +235,13 @@ rtk init --global --agent windsurf    # creates .windsurfrules in current projec
 ### Codex CLI
 
 ```bash
-rtk init --codex           # project-scoped (AGENTS.md)
-rtk init --global --codex  # user-global (~/.codex/AGENTS.md)
+rtk init --codex           # project-scoped (.codex/hooks.json + AGENTS.md)
+rtk init --global --codex  # user-global ($CODEX_HOME or ~/.codex/)
+rtk init --codex --uninstall           # remove project-scoped integration
+rtk init --global --codex --uninstall  # remove user-global integration
 ```
+
+Restart Codex after installation. Project-scoped hooks must be trusted when Codex prompts. The native `rtk hook codex` processor rewrites supported `Bash` commands through `PreToolUse.updatedInput`; Codex then applies its normal approval and sandbox checks to the rewritten command.
 
 ### Kilo Code
 
@@ -262,7 +290,7 @@ Strips only RTK's `[[hooks]]` block and the `~/.vibe/prompts/rtk.md` file. Any o
 | **Plugin** | TypeScript, JavaScript, or Python in agent's plugin system | Transparent, in-place mutation when the agent allows it |
 | **Rules file** | Prompt-level instructions | Guidance only — agent is told to prefer `rtk <cmd>` |
 
-Rules file integrations (Cline, Windsurf, Codex, Kilo Code, Antigravity) rely on the model following instructions. Full hook integrations (Claude Code, Cursor, Gemini) are guaranteed — the command is rewritten before the agent sees it. Plugin integrations (OpenCode, Pi) use in-place mutation via the agent's TypeScript extension API.
+Rules file integrations (Cline, Windsurf, Kilo Code, Antigravity) rely on the model following instructions. Full hook integrations (Claude Code, Trae, Cursor, Gemini, Codex, Factory Droid) apply rewrites before execution whenever RTK supports and can safely attest the command. Plugin integrations (OpenCode, Pi, Hermes) use in-place mutation via the agent's extension or plugin API.
 
 ## Windows support
 
@@ -272,7 +300,7 @@ The shell hook (`rtk-rewrite.sh`) requires a Unix shell. On native Windows:
 - Filters work normally (`rtk cargo test`, `rtk git status`)
 - Auto-rewrite does not work — the AI assistant is instructed to use RTK but commands are not intercepted
 
-For full hook support on Windows, use [WSL](https://learn.microsoft.com/en-us/windows/wsl/install). Inside WSL, all agents with shell hook integration (Claude Code, Cursor, Gemini) work identically to Linux.
+For full shell-hook support on Windows, use [WSL](https://learn.microsoft.com/en-us/windows/wsl/install). Inside WSL, agents with shell hook integration (Claude Code, Cursor, Gemini) work identically to Linux. Native Rust hook integrations such as Trae do not depend on `rtk-rewrite.sh`.
 
 ## Graceful degradation
 
