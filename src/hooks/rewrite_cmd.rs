@@ -76,13 +76,20 @@ pub(crate) fn track_tee_read(cmd: &str) {
 ///
 /// The decision itself is [`decision::decide`], shared with the in-process
 /// `rtk hook <agent>` path; this function is only its exit-code rendering.
+///
+/// A delegate that gates the rewritten command itself can set
+/// [`decision::REWRITE_HOST_ENV`] to its own agent name, which turns exit 3
+/// into exit 0 for it and nothing else — see [`decision::ApprovalOwner`]. Exit
+/// 2 is not reachable from that path, so an explicitly denied command is
+/// denied for every delegate, named or not.
 pub fn run(cmd: &str) -> anyhow::Result<()> {
-    // `rtk rewrite` is a subprocess entry point with no way to be told which
-    // host is asking, so every delegate that shells out to it -- hermes, omp,
-    // opencode, openclaw, pi -- is judged against `~/.claude`'s rules. The
-    // in-process `rtk hook <agent>` path is host-parameterized instead
-    // (`permissions::Host`).
-    let decided = decision::decide(cmd, check_command(cmd));
+    // `rtk rewrite` has one rule source for every delegate that shells out to
+    // it -- hermes, omp, opencode, openclaw, pi -- and that is `~/.claude`'s
+    // rules. The in-process `rtk hook <agent>` path is host-parameterized
+    // instead (`permissions::Host`). What a delegate may say about itself is
+    // only who owns approval, never whose rules apply.
+    let decided =
+        decision::ApprovalOwner::from_env().apply(decision::decide(cmd, check_command(cmd)));
     if !matches!(decided, HookDecision::Deny) {
         track_tee_read(cmd);
     }

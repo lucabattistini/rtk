@@ -188,6 +188,14 @@ openclaw plugins install ./openclaw
 
 Plugin in the `openclaw/` directory. Uses the `before_tool_call` hook, delegates to `rtk rewrite`.
 
+**Permissions.** RTK keeps the deny gate; OpenClaw owns approval. The plugin runs `rtk rewrite` with `RTK_REWRITE_HOST=openclaw`, which tells RTK that this host applies its own exec policy (`tools.exec.mode`, `security`, `ask`) to whatever the hook returns. RTK therefore rewrites without prompting, instead of raising a second approval derived from Claude Code's `settings.json` on a runtime that never opted into it ([#3908](https://github.com/rtk-ai/rtk/issues/3908)).
+
+A command matching a `permissions.deny` rule in those same Claude Code settings files is still refused, and the plugin blocks the tool call — naming the host only relaxes an ask. Commands containing a command substitution or a redirect to a file are never rewritten, on any host.
+
+Exec rules see the rewritten command. OpenClaw folds hook adjustments into the parameters passed to the exec tool, so a rule written against `git push` does not match `rtk git push`; write OpenClaw's own exec rules against the `rtk` form. That was already true before the permission change.
+
+No minimum rtk version: an rtk that predates `RTK_REWRITE_HOST` ignores it and keeps its previous behaviour, which is a prompt rather than a missing gate.
+
 ### Hermes
 
 ```bash
